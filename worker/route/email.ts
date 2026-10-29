@@ -79,52 +79,16 @@ emailRoutes.get("/", async (c) => {
 	});
 });
 
-emailRoutes.get("/:id/attachments/:attachmentId", async (c) => {
-	const emailId = c.req.param("id");
-	const attachmentId = c.req.param("attachmentId");
-	const db = drizzle(c.env.DB, { schema });
-	const attachment = await db
-		.select()
-		.from(schema.attachments)
-		.where(and(
-			eq(schema.attachments.id, attachmentId),
-			eq(schema.attachments.email_id, emailId),
-		))
-		.get();
-
-	if (!attachment) return c.json({ error: "Attachment not found." }, 404);
-
-	const object = await c.env.ATTACHMENTS.get(attachment.object_key);
-	if (!object?.body) return c.json({ error: "Attachment file not found." }, 404);
-
-	const headers = new Headers();
-	object.writeHttpMetadata(headers);
-	headers.set("content-length", String(attachment.size));
-	headers.set("etag", object.httpEtag);
-	headers.set(
-		"content-disposition",
-		`${attachment.disposition === "inline" ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`,
-	);
-
-	return new Response(object.body, { headers });
-});
-
 emailRoutes.get("/:id", async (c) => {
 	const db = drizzle(c.env.DB, { schema });
 	const item = await getEmailRecord(db, c.req.param("id"));
 
 	if (!item) return c.json({ error: "Email not found." }, 404);
 
-	const attachments = await db
-		.select()
-		.from(schema.attachments)
-		.where(eq(schema.attachments.email_id, c.req.param("id")))
-		.all();
-
 	return c.json({
 		item: {
 			...item,
-			attachments,
+			attachments: [],
 		},
 	});
 });
@@ -154,27 +118,8 @@ emailRoutes.delete("/", async (c) => {
 	if (ids.length === 0) return c.json({ error: "Email ids are required." }, 400);
 
 	const db = drizzle(c.env.DB, { schema });
-	const attachmentRows = await db
-		.select({
-			object_key: schema.attachments.object_key,
-		})
-		.from(schema.attachments)
-		.where(inArray(schema.attachments.email_id, ids))
-		.all();
 
 	const deleted = await db.delete(schema.emails).where(inArray(schema.emails.id, ids)).run();
-
-	if (attachmentRows.length > 0) {
-		try {
-			// 附件行会随着邮件删除而级联消失，但 R2 里的二进制对象必须单独删。
-			await c.env.ATTACHMENTS.delete(attachmentRows.map((row) => row.object_key));
-		} catch (error) {
-			console.error("批量删除邮件后清理 R2 失败", {
-				ids,
-				error,
-			});
-		}
-	}
 
 	return c.json({
 		ok: true,
@@ -193,27 +138,8 @@ emailRoutes.delete("/:id", async (c) => {
 
 	if (!item) return c.json({ error: "Email not found." }, 404);
 
-	const attachmentRows = await db
-		.select({
-			object_key: schema.attachments.object_key,
-		})
-		.from(schema.attachments)
-		.where(eq(schema.attachments.email_id, emailId))
-		.all();
 
 	await db.delete(schema.emails).where(eq(schema.emails.id, emailId)).run();
-
-	if (attachmentRows.length > 0) {
-		try {
-			// 先删数据库再删对象可以保证列表状态立即生效，R2 清理失败只留下可补偿的脏对象。
-			await c.env.ATTACHMENTS.delete(attachmentRows.map((row) => row.object_key));
-		} catch (error) {
-			console.error("删除邮件后清理 R2 失败", {
-				id: emailId,
-				error,
-			});
-		}
-	}
 
 	return c.json({
 		ok: true,

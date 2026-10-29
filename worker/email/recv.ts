@@ -8,14 +8,6 @@ type ParsedAddress = {
 	address?: string | null;
 };
 
-type ParsedAttachment = {
-	filename?: string | null;
-	mimeType?: string | null;
-	content?: string | ArrayBuffer | ArrayBufferView;
-	contentId?: string | null;
-	disposition?: string | null;
-};
-
 type ParsedEmail = {
 	deliveredTo?: string | null;
 	from?: ParsedAddress | ParsedAddress[] | null;
@@ -25,7 +17,6 @@ type ParsedEmail = {
 	subject?: string | null;
 	html?: string | null;
 	text?: string | null;
-	attachments?: ParsedAttachment[] | null;
 };
 
 function normalizeEmail(value: string): string {
@@ -64,25 +55,6 @@ function formatAddressList(value: ParsedAddress | ParsedAddress[] | null | undef
 		})
 		.filter(Boolean);
 	return formatted.length > 0 ? formatted.join(", ") : null;
-}
-
-function attachmentSize(content: string | ArrayBuffer | ArrayBufferView | undefined): number {
-	if (!content) return 0;
-	if (typeof content === "string") return new TextEncoder().encode(content).byteLength;
-	if (content instanceof ArrayBuffer) return content.byteLength;
-	if (ArrayBuffer.isView(content)) return content.byteLength;
-	return 0;
-}
-
-function sanitizeFilename(value: string | null | undefined): string {
-	const trimmed = value?.trim() || "untitled";
-	let sanitized = "";
-	for (const char of trimmed) {
-		const code = char.charCodeAt(0);
-		// Windows 文件名不能包含保留符号，ASCII 控制字符也要统一替换，避免对象 key 和下载文件名出现非法值。
-		sanitized += code <= 31 || char === "/" || char === "\\" || char === ":" || char === "*" || char === "?" || char === "\"" || char === "<" || char === ">" || char === "|" ? "_" : char;
-	}
-	return sanitized;
 }
 
 function normalizeEmailSentAt(value: string | null | undefined): number {
@@ -222,30 +194,6 @@ export async function emailHandler(
 		const fromAddress = fromItems.find((item) => item.address?.trim())?.address?.trim();
 		const normalizedFromAddress = fromAddress ? normalizeEmail(fromAddress) : null;
 		const fromName = fromItems.find((item) => item.name?.trim())?.name?.trim() || (normalizedFromAddress ? normalizedFromAddress.split("@")[0] : null);
-		const uploadedKeys: string[] = [];
-		const attachmentRows = [];
-
-		// 附件文件本体先存 R2，数据库里只保存元数据和对象 key。
-		for (const attachment of parsed.attachments || []) {
-			const attachmentId = crypto.randomUUID();
-			const filename = sanitizeFilename(attachment.filename);
-			const mimetype = attachment.mimeType?.trim() || "application/octet-stream";
-			const objectKey = `attachments/${matchedAccount.id}/${emailId}/${attachmentId}/${filename}`;
-			await env.ATTACHMENTS.put(objectKey, attachment.content || "", {
-				httpMetadata: { contentType: mimetype },
-			});
-			uploadedKeys.push(objectKey);
-			attachmentRows.push({
-				id: attachmentId,
-				email_id: emailId,
-				object_key: objectKey,
-				filename,
-				mimetype,
-				size: attachmentSize(attachment.content),
-				content_id: attachment.contentId?.trim() || null,
-				disposition: attachment.disposition?.trim() || null,
-			});
-		}
 
 		const emailValues = {
 			id: emailId,
@@ -268,11 +216,8 @@ export async function emailHandler(
 			await db.insert(schema.emails).values(emailValues).run();
 			insertedEmail = true;
 
-			if (attachmentRows.length > 0) {
-				await db.insert(schema.attachments).values(attachmentRows).run();
-			}
 		} catch (error) {
-			// 邮件行和附件元数据要么都成功，要么尽量回滚已写入的数据和对象。
+			// 邮件行写入失败时，尽量回滚已写入的邮件记录。
 			if (insertedEmail) {
 				try {
 					await db.delete(schema.emails).where(eq(schema.emails.id, emailId)).run();
@@ -280,13 +225,7 @@ export async function emailHandler(
 					// 删除回滚失败只影响清理，不应该吞掉原始入库错误。
 				}
 			}
-			if (uploadedKeys.length > 0) {
-				try {
-					await env.ATTACHMENTS.delete(uploadedKeys);
-				} catch {
-					// 对象清理失败同样只做记录保留，让外层继续按原始失败处理。
-				}
-			}
+
 			throw error;
 		}
 	} catch (error) {
