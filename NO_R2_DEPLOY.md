@@ -15,7 +15,7 @@
    pnpm exec wrangler login
    pnpm exec wrangler d1 create alle
    ```
-2. 将返回的数据库 ID 写入 `wrangler.jsonc` 的 `d1_databases[0].database_id`，替换 `REPLACE_WITH_YOUR_D1_DATABASE_ID`。
+2. 将返回的数据库 ID 写入 `wrangler.jsonc` 的 `database_id`
 3. 生成/更新 Worker 类型：
    ```bash
    pnpm install
