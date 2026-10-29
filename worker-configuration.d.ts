@@ -6,7 +6,6 @@ declare namespace Cloudflare {
 		mainModule: typeof import("./worker/index");
 	}
 	interface Env {
-		ATTACHMENTS: R2Bucket;
 		DB: D1Database;
 		SECRET: string;
 	}
