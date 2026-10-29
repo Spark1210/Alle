@@ -116,44 +116,8 @@ accountRoutes.delete("/:id", async (c) => {
 
 	if (!account) return c.json({ error: "Account not found." }, 404);
 
-	const attachmentRows = await db
-		.select({
-			object_key: schema.attachments.object_key,
-		})
-		.from(schema.attachments)
-		.innerJoin(schema.emails, eq(schema.attachments.email_id, schema.emails.id))
-		.where(eq(schema.emails.account_id, accountId))
-		.all();
 
-	// 数据库级联会删掉 emails 和 attachments 行，但 R2 对象不会跟着删。
-	// 这里先删账号主记录，让列表状态立即生效；随后再按账号前缀兜底扫一遍桶，
-	// 这样不仅能删掉当前数据库里还能查到的附件对象，也能把历史残留的脏对象一起清掉。
 	await db.delete(schema.accounts).where(eq(schema.accounts.id, accountId)).run();
-
-	const objectKeys = new Set(attachmentRows.map((row) => row.object_key));
-	try {
-		let cursor: string | undefined;
-		for (;;) {
-			const page = await c.env.ATTACHMENTS.list({
-				prefix: `attachments/${accountId}/`,
-				cursor,
-			});
-			for (const object of page.objects) objectKeys.add(object.key);
-			if (!page.truncated) break;
-			cursor = page.cursor;
-		}
-
-		const keys = [...objectKeys];
-		for (let index = 0; index < keys.length; index += 1000) {
-			await c.env.ATTACHMENTS.delete(keys.slice(index, index + 1000));
-		}
-	} catch (error) {
-		console.error("删除账号后清理 R2 失败", {
-			id: accountId,
-			objectKeys: [...objectKeys],
-			error,
-		});
-	}
 
 	return c.json({
 		ok: true,
